@@ -1,4 +1,4 @@
-// Main front-end JS for EasyGrade (client-side demo)
+// Main front-end JS for EasyGrade (client-side demo) with optional Firebase integration
 const TestPortal = (function(){
   let questions = [];
   let answers = {};
@@ -66,12 +66,8 @@ const TestPortal = (function(){
     }
   }
 
-  function prev(){
-    if(current>0){ current--; renderQuestion(); }
-  }
-  function next(){
-    if(current<total-1){ current++; renderQuestion(); }
-  }
+  function prev(){ if(current>0){ current--; renderQuestion(); } }
+  function next(){ if(current<total-1){ current++; renderQuestion(); } }
 
   function startTimer(){
     updateTimerDisplay();
@@ -87,7 +83,7 @@ const TestPortal = (function(){
     const el = document.getElementById('timer'); if(el) el.textContent = `${m}:${s}`;
   }
 
-  function submitTest(){
+  async function submitTest(){
     clearInterval(timerInterval);
     // score
     let score = 0;
@@ -110,18 +106,28 @@ const TestPortal = (function(){
       fbEl.appendChild(row);
     });
 
-    // save result
-    const results = JSON.parse(localStorage.getItem('easygrade_results')||'[]');
-    results.unshift({ date: new Date().toISOString(), total: questions.length, score, percent });
-    localStorage.setItem('easygrade_results', JSON.stringify(results));
+    const resultPayload = { date: new Date().toISOString(), total: questions.length, score, percent, subject: (document.getElementById('subjectSelect')?.value||'') };
+
+    // save result: try Firebase if enabled, else localStorage
+    if(window.FirebaseHelpers && FirebaseHelpers.isEnabled()){
+      try{
+        const user = null; // we can't access auth user directly here; FirebaseHelpers handles server-side docs
+        await FirebaseHelpers.saveTestResult('anonymous', resultPayload);
+      }catch(e){ console.warn('Failed to save to Firebase, falling back to localStorage', e); saveResultLocal(resultPayload); }
+    } else {
+      saveResultLocal(resultPayload);
+    }
 
     // show results view
     document.getElementById('test-area').classList.add('d-none');
     document.getElementById('results-area').classList.remove('d-none');
-    document.getElementById('retakeBtn').addEventListener('click', ()=>{
-      // reset and go back to setup
-      backToSetup();
-    });
+    document.getElementById('retakeBtn').addEventListener('click', ()=>{ backToSetup(); });
+  }
+
+  function saveResultLocal(result){
+    const results = JSON.parse(localStorage.getItem('easygrade_results')||'[]');
+    results.unshift(result);
+    localStorage.setItem('easygrade_results', JSON.stringify(results));
   }
 
   function retake(){ backToSetup(); }
@@ -158,7 +164,7 @@ const TestPortal = (function(){
   return { bindUI, start, showHistory };
 })();
 
-// Careers form handling
+// Careers form handling with optional Firebase integration
 const CareersForm = (function(){
   function bind(){
     const form = document.getElementById('tutorForm');
@@ -170,7 +176,7 @@ const CareersForm = (function(){
     });
   }
 
-  function handleSubmit(e){
+  async function handleSubmit(e){
     e.preventDefault();
     const form = e.target;
     const name = form.name.value.trim();
@@ -186,15 +192,59 @@ const CareersForm = (function(){
       return;
     }
 
-    const apps = JSON.parse(localStorage.getItem('easygrade_apps')||'[]');
-    const app = { id: Date.now(), name, email, subject, bio, resumeName: resume?resume.name:'', date: new Date().toISOString() };
-    apps.unshift(app);
-    localStorage.setItem('easygrade_apps', JSON.stringify(apps));
-
-    const msg = document.getElementById('formMessage');
-    msg.innerHTML = '<div class="alert alert-success">Application submitted. We will review and contact you soon.</div>';
-    form.reset();
+    if(window.FirebaseHelpers && FirebaseHelpers.isEnabled()){
+      try{
+        await FirebaseHelpers.saveTutorApplication({ name, email, subject, bio, resumeFile: resume });
+        document.getElementById('formMessage').innerHTML = '<div class="alert alert-success">Application submitted. We will review and contact you soon.</div>';
+        form.reset();
+      }catch(err){
+        console.error(err);
+        document.getElementById('formMessage').innerHTML = '<div class="alert alert-danger">Failed to submit application. Please try again later.</div>';
+      }
+    } else {
+      const apps = JSON.parse(localStorage.getItem('easygrade_apps')||'[]');
+      const app = { id: Date.now(), name, email, subject, bio, resumeName: resume?resume.name:'', date: new Date().toISOString() };
+      apps.unshift(app);
+      localStorage.setItem('easygrade_apps', JSON.stringify(apps));
+      const msg = document.getElementById('formMessage');
+      msg.innerHTML = '<div class="alert alert-success">Application submitted (demo mode). We will review and contact you soon.</div>';
+      form.reset();
+    }
   }
 
   return { bind };
 })();
+
+// Sample questions (kept in the page scripts) and startup
+document.addEventListener('DOMContentLoaded', () => {
+  // bind UI
+  TestPortal.bindUI();
+  CareersForm.bind();
+
+  // wire start/test buttons if present
+  const startBtn = document.getElementById('startTest');
+  if(startBtn){
+    const sampleQuestions = {
+      math: [
+        { id: 1, type: 'mcq', text: 'What is 8 × 7?', options: ['54', '56', '58', '64'], answer: 1 },
+        { id: 2, type: 'mcq', text: 'Solve: 12 ÷ 3 + 4', options: ['8', '6', '7', '4'], answer: 0 },
+        { id: 3, type: 'mcq', text: 'What is the square root of 81?', options: ['7', '8', '9', '10'], answer: 2 }
+      ],
+      english: [
+        { id: 1, type: 'mcq', text: 'Choose the correct form: "She ___ to the store yesterday."', options: ['go', 'goes', 'went', 'gone'], answer: 2 },
+        { id: 2, type: 'mcq', text: 'Select the synonym of "happy".', options: ['sad', 'elated', 'angry', 'tired'], answer: 1 }
+      ],
+      science: [
+        { id: 1, type: 'mcq', text: 'Water boils at what temperature at sea level?', options: ['90°C', '100°C', '110°C', '120°C'], answer: 1 }
+      ]
+    };
+
+    startBtn.addEventListener('click', () => {
+      const sub = document.getElementById('subjectSelect').value;
+      const time = parseInt(document.getElementById('timeLimit').value, 10) || 10;
+      TestPortal.start(sampleQuestions[sub], time);
+    });
+    document.getElementById('viewResults').addEventListener('click', () => TestPortal.showHistory());
+  }
+
+});
